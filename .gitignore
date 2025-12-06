@@ -364,3 +364,4 @@ FodyWeavers.xsd
 
 #Video - Audio
 *.mjpeg
+*.DS_Store
