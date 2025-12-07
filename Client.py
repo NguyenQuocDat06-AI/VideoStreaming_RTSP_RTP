@@ -20,9 +20,12 @@ class Client:
 	PAUSE = 2
 	TEARDOWN = 3
 	
-	FPS = 25
+	# Tăng FPS lên 30 để mượt hơn (chuẩn video thường là 30 hoặc 60)
+	FPS = 30 
 	FRAME_INTERVAL = 1.0 / FPS 
-	BUFFER_THRESHOLD = 20
+	
+	# Tăng ngưỡng buffer lên để Caching hiệu quả hơn với video 4K
+	BUFFER_THRESHOLD = 40 
 	
 	def __init__(self, master, serveraddr, serverport, rtpport, filename):
 		self.master = master
@@ -47,20 +50,14 @@ class Client:
 		self.connectToServer()
 
 	def createWidgets(self):
-		# 1. Đặt kích thước cửa sổ ban đầu hợp lý (800x600)
-		# Giúp cửa sổ không bị bung quá to khi gặp video HD/4K
 		self.master.geometry("800x600")
 
-		# 2. QUAN TRỌNG: Tạo khung điều khiển và PACK TRƯỚC (side=BOTTOM)
-		# Điều này đảm bảo các nút bấm luôn được dành chỗ trước và nằm ở đáy
 		self.controlFrame = Frame(self.master)
 		self.controlFrame.pack(side=BOTTOM, fill=X, padx=5, pady=5)
 		
-		# Status Label nằm trong controlFrame
 		self.statusLabel = Label(self.controlFrame, text="Status: Idle", fg="blue", font=("Helvetica", 10))
 		self.statusLabel.pack(side=TOP, fill=X, pady=2)
 		
-		# Các nút bấm
 		btnConfig = {'width': 15, 'padx': 3, 'pady': 3}
 		
 		self.setup = Button(self.controlFrame, text="Setup", command=self.setupMovie, **btnConfig)
@@ -75,12 +72,9 @@ class Client:
 		self.teardown = Button(self.controlFrame, text="Teardown", command=self.exitClient, **btnConfig)
 		self.teardown.pack(side=LEFT, padx=2)
 
-		# 3. Tạo khung Video và PACK SAU (side=TOP, expand=True)
-		# Nó sẽ chiếm toàn bộ khoảng trống CÒN LẠI phía trên
 		self.videoFrame = Frame(self.master)
 		self.videoFrame.pack(side=TOP, fill=BOTH, expand=True, padx=5, pady=5)
 		
-		# Label hiển thị ảnh
 		self.label = Label(self.videoFrame, bg="black")
 		self.label.pack(fill=BOTH, expand=True)
 
@@ -105,13 +99,14 @@ class Client:
 	def pauseMovie(self):
 		if self.state == self.PLAYING:
 			self.state = self.READY
-			self.statusLabel.configure(text="Paused (Buffering...)", fg="red")
+			self.statusLabel.configure(text="Paused", fg="red")
 			gc.collect()
 
 	def playMovie(self):
 		if self.state == self.READY:
 			self.stopEvent.clear()
-			self.currentFrameData = bytearray()
+			# Không reset buffer ở đây để giữ lại các frame đã cache nếu có
+			# self.currentFrameData = bytearray() 
 			
 			if not hasattr(self, 'networkThread') or not self.networkThread.is_alive():
 				self.networkThread = threading.Thread(target=self.runNetworkLoop)
@@ -123,15 +118,19 @@ class Client:
 				self.displayThread.daemon = True
 				self.displayThread.start()
 
-			if self.frameBuffer.empty():
+			# Chỉ gửi lệnh PLAY nếu chưa có dữ liệu trong buffer hoặc đang cần thêm
+			if self.frameBuffer.qsize() < self.BUFFER_THRESHOLD:
 				self.sendRtspRequest(self.PLAY)
 			
 			self.state = self.PLAYING
+			# Kích hoạt chế độ buffering ngay khi bấm Play
 			self.isBuffering = True 
+			self.statusLabel.configure(text="Buffering...", fg="orange")
 
 	def runNetworkLoop(self):
 		while not self.stopEvent.is_set():
 			try:
+				# Tăng kích thước nhận gói tin UDP để tránh bị drop packet với 4K
 				data = self.rtpSocket.recv(65535)
 				if data:
 					rtpPacket = RtpPacket()
@@ -140,8 +139,11 @@ class Client:
 					self.currentFrameData.extend(rtpPacket.getPayload())
 					
 					if rtpPacket.getMarker():
+						# Marker bit = 1 nghĩa là kết thúc 1 frame ảnh
 						if len(self.currentFrameData) > 0:
+							# Kiểm tra header/footer JPEG cơ bản
 							if self.currentFrameData.startswith(b'\xff\xd8') and self.currentFrameData.endswith(b'\xff\xd9'):
+								# Đưa frame hoàn chỉnh vào buffer
 								self.frameBuffer.put(bytes(self.currentFrameData))
 						
 						self.currentFrameData = bytearray()
@@ -153,49 +155,76 @@ class Client:
 
 	def runDisplayLoop(self):
 		while not self.stopEvent.is_set():
+			# 1. Đo thời gian bắt đầu vòng lặp
+			start_time = time.time()
+
 			if self.state != self.PLAYING:
-				time.sleep(0.1)
+				time.sleep(0.01)
 				continue
 			
 			bufferSize = self.frameBuffer.qsize()
 			
+			# --- LOGIC CACHING ---
+			# Nếu đang trong trạng thái Buffering (nạp cache)
 			if self.isBuffering:
 				if bufferSize >= self.BUFFER_THRESHOLD:
 					self.isBuffering = False
-					self.master.after(0, lambda: self.statusLabel.configure(text="Playing", fg="green"))
+					self.master.after(0, lambda: self.statusLabel.configure(text=f"Playing (Buffer: {bufferSize})", fg="green"))
 				else:
+					# Chưa đủ cache, đợi thêm một chút rồi kiểm tra lại
+					self.master.after(0, lambda: self.statusLabel.configure(text=f"Buffering... ({bufferSize}/{self.BUFFER_THRESHOLD})", fg="orange"))
 					time.sleep(0.05)
 					continue
 			
-			if not self.frameBuffer.empty():
-				try:
-					frameData = self.frameBuffer.get_nowait()
-					self.updateMovie(frameData)
-					time.sleep(self.FRAME_INTERVAL)
-				except queue.Empty:
-					pass
-			else:
+			# Nếu hết sạch buffer trong lúc đang play -> Quay lại buffering
+			if self.frameBuffer.empty():
 				self.isBuffering = True
-				self.master.after(0, lambda: self.statusLabel.configure(text="Buffering...", fg="orange"))
+				continue
+
+			# --- HIỂN THỊ ẢNH ---
+			try:
+				frameData = self.frameBuffer.get_nowait()
+				self.updateMovie(frameData)
+			except queue.Empty:
+				pass
+
+			# 2. TÍNH TOÁN THỜI GIAN NGỦ ĐỂ KHÔNG BỊ SLOW MOTION
+			# Thời gian đã trôi qua cho việc giải nén và resize ảnh
+			process_time = time.time() - start_time
+			
+			# Thời gian cần ngủ = Khoảng cách giữa các frame chuẩn - Thời gian đã xử lý
+			delay = self.FRAME_INTERVAL - process_time
+			
+			if delay > 0:
+				time.sleep(delay)
+			else:
+				# Nếu xử lý quá lâu (lâu hơn cả 1 frame), không ngủ nữa để đuổi kịp tiến độ
+				pass
 
 	def updateMovie(self, imageBytes):
 		try:
+			# Sử dụng io.BytesIO để đọc ảnh từ RAM (nhanh hơn ghi ra đĩa)
 			img = Image.open(io.BytesIO(imageBytes))
 			
-			# Lấy kích thước của KHUNG CHỨA (videoFrame) để resize ảnh vào đó
 			w = self.videoFrame.winfo_width()
 			h = self.videoFrame.winfo_height()
 			
-			# Nếu khung chưa kịp hiển thị (kích thước < 10), dùng kích thước mặc định 640x480
 			if w < 10 or h < 10: 
 				w, h = 640, 480
 			
-			# Resize ảnh cho vừa khít khung chứa
-			img = img.resize((w, h), Image.Resampling.LANCZOS)
+			# --- [SỬA ĐỔI QUAN TRỌNG] ---
+			# Thay thế LANCZOS (rất chậm) bằng BILINEAR (nhanh)
+			# Image.Resampling.BILINEAR: Cân bằng tốt giữa tốc độ và chất lượng
+			# Nếu máy vẫn yếu, bạn có thể đổi thành Image.Resampling.NEAREST
+			img.thumbnail((w, h), Image.Resampling.LANCZOS)
 			
 			photo = ImageTk.PhotoImage(img)
+			
+			# Cập nhật UI trên luồng chính (Main Thread)
 			self.master.after(0, lambda p=photo: self._update_label(p))
-		except: pass
+		except Exception as e:
+			print(f"Frame error: {e}")
+			pass
 		
 	def _update_label(self, photo):
 		self.label.configure(image=photo)
@@ -282,7 +311,8 @@ class Client:
 							self.statusLabel.configure(text="Ready to Play", fg="blue")
 						elif self.requestSent == self.PLAY:
 							self.state = self.PLAYING 
-							self.statusLabel.configure(text="Playing", fg="green")
+							# self.statusLabel.configure(text="Playing", fg="green") 
+                            # (Đã chuyển update status vào runDisplayLoop để khớp với logic buffer)
 						elif self.requestSent == self.PAUSE:
 							pass
 						elif self.requestSent == self.TEARDOWN:
@@ -297,6 +327,7 @@ class Client:
 		self.rtpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.rtpSocket.settimeout(0.5) 
 		try:
+			# Tăng bộ đệm nhận của Socket để chứa frame 4K lớn
 			self.rtpSocket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 10*1024*1024)
 			self.rtpSocket.bind(('', self.rtpPort))
 		except:
