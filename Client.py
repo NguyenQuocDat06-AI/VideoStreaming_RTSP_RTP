@@ -46,7 +46,7 @@ class Client:
 		self.totalFrames = 0
 		self.stopEvent = threading.Event() 
 		self.isBuffering = False
-		
+		self.downloadComplete = False
 		self.connectToServer()
 
 	def createWidgets(self):
@@ -119,13 +119,17 @@ class Client:
 				self.displayThread.start()
 
 			# Chỉ gửi lệnh PLAY nếu chưa có dữ liệu trong buffer hoặc đang cần thêm
-			if self.frameBuffer.qsize() < self.BUFFER_THRESHOLD:
+			if self.frameBuffer.qsize() < self.BUFFER_THRESHOLD or self.downloadComplete:
 				self.sendRtspRequest(self.PLAY)
 			
 			self.state = self.PLAYING
-			# Kích hoạt chế độ buffering ngay khi bấm Play
-			self.isBuffering = True 
-			self.statusLabel.configure(text="Buffering...", fg="orange")
+			if self.frameBuffer.qsize() > 0 or self.downloadComplete:
+				# Nếu có sẵn hàng HOẶC đã tải xong hết -> Chạy luôn
+				self.isBuffering = False 
+				self.statusLabel.configure(text=f"Playing (Buffer: {self.frameBuffer.qsize()})", fg="green")
+			else:
+				self.isBuffering = True 
+				self.statusLabel.configure(text="Buffering...", fg="orange")
 
 	def runNetworkLoop(self):
 		while not self.stopEvent.is_set():
@@ -148,6 +152,8 @@ class Client:
 						
 						self.currentFrameData = bytearray()
 			except socket.timeout:
+				if (self.state == self.PLAYING):
+					self.downloadComplete = True
 				continue
 			except:
 				if self.teardownAcked == 1 or self.stopEvent.is_set():
@@ -167,7 +173,7 @@ class Client:
 			# --- LOGIC CACHING ---
 			# Nếu đang trong trạng thái Buffering (nạp cache)
 			if self.isBuffering:
-				if bufferSize >= self.BUFFER_THRESHOLD:
+				if bufferSize >= self.BUFFER_THRESHOLD or self.downloadComplete:
 					self.isBuffering = False
 					self.master.after(0, lambda: self.statusLabel.configure(text=f"Playing (Buffer: {bufferSize})", fg="green"))
 				else:
@@ -178,8 +184,15 @@ class Client:
 			
 			# Nếu hết sạch buffer trong lúc đang play -> Quay lại buffering
 			if self.frameBuffer.empty():
-				self.isBuffering = True
-				continue
+				if self.downloadComplete:
+					# Đã tải xong mà hết buffer -> Hết phim
+					self.master.after(0, lambda: self.statusLabel.configure(text="Finished", fg="blue"))
+					self.state = self.READY
+					continue
+				else:
+					# Chưa tải xong mà hết buffer -> Mạng lag -> Buffering
+					self.isBuffering = True
+					continue
 
 			# --- HIỂN THỊ ẢNH ---
 			try:
