@@ -225,10 +225,6 @@ class Client:
 			if w < 10 or h < 10: 
 				w, h = 640, 480
 			
-			# --- [SỬA ĐỔI QUAN TRỌNG] ---
-			# Thay thế LANCZOS (rất chậm) bằng BILINEAR (nhanh)
-			# Image.Resampling.BILINEAR: Cân bằng tốt giữa tốc độ và chất lượng
-			# Nếu máy vẫn yếu, bạn có thể đổi thành Image.Resampling.NEAREST
 			img.thumbnail((w, h), Image.Resampling.LANCZOS)
 			
 			photo = ImageTk.PhotoImage(img)
@@ -324,8 +320,6 @@ class Client:
 							self.statusLabel.configure(text="Ready to Play", fg="blue")
 						elif self.requestSent == self.PLAY:
 							self.state = self.PLAYING 
-							# self.statusLabel.configure(text="Playing", fg="green") 
-                            # (Đã chuyển update status vào runDisplayLoop để khớp với logic buffer)
 						elif self.requestSent == self.PAUSE:
 							pass
 						elif self.requestSent == self.TEARDOWN:

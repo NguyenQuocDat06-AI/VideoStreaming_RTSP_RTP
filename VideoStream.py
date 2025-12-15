@@ -10,7 +10,6 @@ class VideoStream:
 		except:
 			raise IOError
 			
-		# --- LOGIC TÁCH FRAME THEO CHUẨN JPEG (FF D8 ... FF D9) ---
 		# Dấu hiệu nhận biết
 		SOI = b'\xff\xd8' # Start of Image
 		EOI = b'\xff\xd9' # End of Image
